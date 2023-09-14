@@ -63,6 +63,8 @@ public class Main {
 }
 ```
 
+Some of the following examples use [Guava’s immutable maps](https://github.com/google/guava), but feel free to use plain old Java maps instead.
+
 ### Track
 
 ```java
