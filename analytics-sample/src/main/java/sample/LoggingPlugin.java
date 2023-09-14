@@ -1,10 +1,10 @@
 package sample;
 
-import com.segment.analytics.Analytics;
-import com.segment.analytics.Callback;
-import com.segment.analytics.Log;
-import com.segment.analytics.Plugin;
-import com.segment.analytics.messages.Message;
+import com.hightouch.analytics.Analytics;
+import com.hightouch.analytics.Callback;
+import com.hightouch.analytics.Log;
+import com.hightouch.analytics.Plugin;
+import com.hightouch.analytics.messages.Message;
 
 /**
  * A {@link Plugin} implementation that redirects client logs to standard output and logs callback

@@ -26,7 +26,7 @@ jobs:
     # - if: failure()
     #   name: Test Spotless Failed
       # run: |
-      #   wget https://raw.githubusercontent.com/segmentio/circleci-notifications/master/slack-notify-branch.sh
+      #   wget https://raw.githubusercontent.com/hightouchio/circleci-notifications/master/slack-notify-branch.sh
       #   chmod u+x slack-notify-branch.sh
       #   BUILD_STATUS="Failed" NOTIFY_BRANCH="master" ./slack-notify-branch.sh
     - if: steps.spotless.conclusion == 'success'

@@ -9,13 +9,13 @@
     <version>7</version>
   </parent>
 
-  <groupId>com.segment.analytics.java</groupId>
+  <groupId>com.hightouch.analytics.java</groupId>
   <artifactId>analytics-parent</artifactId>
   <version>3.4.1-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Analytics for Java (Parent)</name>
   <description>The hassle-free way to add analytics to your Android app.</description>
-  <url>https://github.com/segmentio/analytics-java</url>
+  <url>https://github.com/ht-sdks/events-sdk-java</url>
 
   <modules>
     <module>analytics-core</module>
@@ -50,15 +50,15 @@
   </properties>
 
   <scm>
-    <url>https://github.com/segmentio/analytics-java/</url>
-    <connection>scm:git:https://github.com/segmentio/analytics-java.git</connection>
-    <developerConnection>scm:git:git@github.com:segmentio/analytics-java.git</developerConnection>
+    <url>https://github.com/ht-sdks/events-sdk-java/</url>
+    <connection>scm:git:https://github.com/ht-sdks/events-sdk-java.git</connection>
+    <developerConnection>scm:git:git@github.com:ht-sdks/events-sdk-java.git</developerConnection>
     <tag>HEAD</tag>
   </scm>
 
   <issueManagement>
     <system>GitHub Issues</system>
-    <url>https://github.com/segmentio/analytics-java/issues</url>
+    <url>https://github.com/ht-sdks/events-sdk-java/issues</url>
   </issueManagement>
 
   <licenses>
@@ -258,7 +258,7 @@
           <archive>
             <manifest>
               <mainClass>
-                com.segment.analytics.Analytics
+                com.hightouch.analytics.Analytics
               </mainClass>
             </manifest>
           </archive>
