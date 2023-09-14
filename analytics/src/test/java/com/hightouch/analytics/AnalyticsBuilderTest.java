@@ -273,7 +273,7 @@ public class AnalyticsBuilderTest {
   @Test
   public void buildsCorrectEndpoint() {
     builder.endpoint("https://api.hightouch.io");
-    String expectedURL = "https://api.hightouch.io/v1/import/";
+    String expectedURL = "https://api.hightouch.io/v1/batch/";
     assertEquals(expectedURL, builder.endpoint.toString());
   }
 
