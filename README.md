@@ -21,7 +21,7 @@ Add to `pom.xml`:
 
 ```xml
 <dependency>
-  <groupId>com.github.ht-sdks.events-sdk-android</groupId>
+  <groupId>com.github.ht-sdks.events-sdk-java</groupId>
   <artifactId>analytics</artifactId>
   <version>LATEST</version>
 </dependency>
