@@ -45,7 +45,7 @@ public class AnalyticsClient {
 
   static {
     Map<String, String> library = new LinkedHashMap<>();
-    library.put("name", "analytics-java");
+    library.put("name", "events-sdk-java");
     library.put("version", AnalyticsVersion.get());
     Map<String, Object> context = new LinkedHashMap<>();
     context.put("library", Collections.unmodifiableMap(library));

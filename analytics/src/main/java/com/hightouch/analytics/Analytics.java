@@ -129,7 +129,7 @@ public class Analytics {
   public static class Builder {
     private static final String DEFAULT_ENDPOINT = "https://events.us-east-1.hightouch.com";
     private static final String DEFAULT_PATH = "/v1/batch/";
-    private static final String DEFAULT_USER_AGENT = "analytics-java/" + AnalyticsVersion.get();
+    private static final String DEFAULT_USER_AGENT = "events-sdk-java/" + AnalyticsVersion.get();
     private static final int MESSAGE_QUEUE_MAX_BYTE_SIZE = 1024 * 500;
 
     private final String writeKey;
