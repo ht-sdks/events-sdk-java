@@ -15,22 +15,7 @@ This file provides guidance for updating dependencies in this Java Maven multi-m
 
 All dependency versions are centralized as `<properties>` in the root `pom.xml` and referenced via `${property.name}` in the `<dependencyManagement>` section. When updating a dependency version, you typically only need to change the property value in the root `pom.xml`.
 
-Key version properties:
-
-| Property | Artifact | Current |
-|---|---|---|
-| `retrofit.version` | Retrofit | 2.9.0 |
-| `gson.version` | Gson | 2.9.1 |
-| `okhttp.version` | OkHttp | 4.10.0 |
-| `logging.version` | OkHttp Logging Interceptor | 4.10.0 |
-| `guava.version` | Guava | 31.1-jre |
-| `auto.version` | AutoValue | 1.10.1 |
-| `kotlin.version` | Kotlin stdlib | 1.7.20 |
-| `spring.boot.version` | Spring Boot | 2.7.5 |
-| `mockito.version` | Mockito | 4.11.0 |
-| `assertj.version` | AssertJ | 3.24.2 |
-| `junit.version` | JUnit 4 | 4.13.2 |
-| `spotless.version` | Spotless | 2.27.2 |
+Refer to the `<properties>` block in the root `pom.xml` for the current list of version properties and their values.
 
 ---
 
@@ -112,7 +97,7 @@ Edit the `<properties>` block in the root `pom.xml`:
 mvn versions:update-properties
 
 # Or update a specific property
-mvn versions:update-properties -Dincludes=com.google.code.gson:gson
+mvn versions:update-properties -Dincludes=com.google.code.gson:gson:jar::
 
 # Review what changed
 git diff pom.xml
