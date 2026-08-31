@@ -9,7 +9,7 @@ This file provides guidance for updating dependencies in this Java Maven multi-m
 - **Testing**: JUnit 4, Mockito, AssertJ, Burst
 - **Linting/Formatting**: Spotless (Google Java Format)
 - **API Compatibility**: animal-sniffer
-- **CI**: GitHub Actions on JDK 8, 11, and 17
+- **CI**: GitHub Actions on JDK 8, 11, 17, 21, and 25
 
 ### Dependency Version Management
 
@@ -137,7 +137,7 @@ Compare test results to your baseline from step 2. Fix any failures before proce
 
 ### 7. Verify CI Would Pass
 
-The CI runs on JDK 8, 11, and 17, but not every check is matrixed:
+The CI runs on JDK 8, 11, 17, 21, and 25, but not every check is matrixed:
 
 1. `mvn -B verify` on every JDK (unit tests plus the analytics-cli fat-JAR `--help` smoke test)
 2. `mvn -B spotless:check` on JDK 17 only
@@ -152,6 +152,8 @@ JAVA_HOME=/path/to/jdk11 mvn -B verify
 
 # Same on JDK 17, plus Spotless and animal-sniffer in the same reactor
 JAVA_HOME=/path/to/jdk17 mvn -B verify spotless:check animal-sniffer:check
+JAVA_HOME=/path/to/jdk21 mvn -B verify
+JAVA_HOME=/path/to/jdk25 mvn -B verify
 ```
 
 ---

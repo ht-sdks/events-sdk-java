@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java: ["8", "11", "17"]
+        java: ["8", "11", "17", "21", "25"]
         include:
           - java: "8"
             maven_goals: verify
@@ -21,6 +21,10 @@ jobs:
             maven_goals: verify
           - java: "17"
             maven_goals: "verify spotless:check animal-sniffer:check"
+          - java: "21"
+            maven_goals: verify
+          - java: "25"
+            maven_goals: verify
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
