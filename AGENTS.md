@@ -165,7 +165,7 @@ JAVA_HOME=/path/to/jdk25 mvn -B verify
 1. **Spotless failures**: Run `mvn spotless:apply` to auto-format, then verify with `mvn spotless:check`.
 2. **animal-sniffer failures**: A dependency upgrade introduced an API not available in the target Java version (8). You may need to find an older version of the dependency or adjust usage.
 3. **Test failures**: Check changelogs of updated dependencies for breaking changes. Common issues include Mockito API changes between major versions, Gson serialization behavior changes, and OkHttp API changes.
-4. **Compilation errors**: AutoValue or Retrofit annotation processors may have changed. Try `mvn clean install` to clear stale generated sources in `target/generated-sources/`.
+4. **Compilation errors**: AutoValue or Retrofit annotation processors may have changed. Try `mvn clean install` to clear stale generated sources in `target/generated-sources/`. JDK 22+ does not run annotation processors found only on the classpath; AutoValue is registered via `annotationProcessorPaths` on the compiler plugin.
 
 ### Spring Boot Version Constraints
 

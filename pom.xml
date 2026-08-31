@@ -178,6 +178,15 @@
             <source>${java.version}</source>
             <target>${java.version}</target>
             <showWarnings>true</showWarnings>
+            <!-- JDK 22+ no longer runs annotation processors found on the
+                 classpath unless they are listed here. -->
+            <annotationProcessorPaths>
+              <path>
+                <groupId>com.google.auto.value</groupId>
+                <artifactId>auto-value</artifactId>
+                <version>${auto.version}</version>
+              </path>
+            </annotationProcessorPaths>
           </configuration>
         </plugin>
 
