@@ -40,11 +40,11 @@ pwd  # Should contain: pom.xml, analytics-core/, analytics/, etc.
 # Install all modules (downloads dependencies and builds)
 mvn install -DskipTests
 
-# Run formatting check, API compatibility check, and all tests
-mvn spotless:check animal-sniffer:check test verify
-
-# Build all packages
-mvn -B package
+# Run tests and the CLI fat-JAR smoke test (every JDK).
+# Formatting and API compatibility run on JDK 17.
+mvn -B verify
+mvn -B spotless:check
+mvn -B animal-sniffer:check
 ```
 
 Record the number of passing tests before making any changes. This ensures you can verify nothing broke after upgrading. Look for the `Tests run:` summary lines in the Maven output for each module.
@@ -137,22 +137,21 @@ Compare test results to your baseline from step 2. Fix any failures before proce
 
 ### 7. Verify CI Would Pass
 
-The CI runs on JDK 8, 11, and 17. The CI pipeline executes two steps:
+The CI runs on JDK 8, 11, and 17, but not every check is matrixed:
 
-1. `mvn spotless:check animal-sniffer:check test verify`
-2. `mvn -B package`
+1. `mvn -B verify` on every JDK (unit tests plus the analytics-cli fat-JAR `--help` smoke test)
+2. `mvn -B spotless:check` on JDK 17 only
+3. `mvn -B animal-sniffer:check` on JDK 17 only (Java 8 API signature)
 
-If you have multiple JDK versions available locally:
+Local formatting and animal-sniffer can require JDK 17. If you have multiple JDK versions available:
 
 ```bash
-# Test with JDK 8 (minimum supported)
-JAVA_HOME=/path/to/jdk8 mvn spotless:check animal-sniffer:check test verify && mvn -B package
+# Test and smoke-test the analytics-cli assembly JAR
+JAVA_HOME=/path/to/jdk8 mvn -B verify
+JAVA_HOME=/path/to/jdk11 mvn -B verify
 
-# Test with JDK 11
-JAVA_HOME=/path/to/jdk11 mvn spotless:check animal-sniffer:check test verify && mvn -B package
-
-# Test with JDK 17
-JAVA_HOME=/path/to/jdk17 mvn spotless:check animal-sniffer:check test verify && mvn -B package
+# Same on JDK 17, plus Spotless and animal-sniffer in the same reactor
+JAVA_HOME=/path/to/jdk17 mvn -B verify spotless:check animal-sniffer:check
 ```
 
 ---
@@ -172,7 +171,7 @@ The `analytics-spring-boot-starter` module uses Spring Boot 2.x. Spring Boot 3.x
 
 ### Spotless / Google Java Format Version Coupling
 
-The Spotless plugin (`2.27.2`) uses Google Java Format `1.5`, which is compatible with Java 8. Newer versions of Google Java Format require Java 11+. Do not upgrade Google Java Format without also updating the Java source level.
+CI runs Spotless on JDK 17. The plugin (`2.27.2`) and Google Java Format `1.5` can still run there, and newer Spotless/GJF versions may be used without raising the library's Java 8 baseline. Newer GJF typically needs JDK 11+ to execute and may reformat existing files.
 
 ### Transitive Dependency Conflicts
 

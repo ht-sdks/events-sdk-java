@@ -30,6 +30,7 @@
     <java.version>8</java.version>
     <kotlin.version>1.7.20</kotlin.version>
     <spotless.version>2.27.2</spotless.version>
+    <animal-sniffer.version>1.23</animal-sniffer.version>
     <retrofit.version>2.9.0</retrofit.version>
     <auto.version>1.10.1</auto.version>
 
@@ -194,6 +195,19 @@
           </configuration>
         </plugin>
 
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>animal-sniffer-maven-plugin</artifactId>
+          <version>${animal-sniffer.version}</version>
+          <configuration>
+            <signature>
+              <groupId>org.codehaus.mojo.signature</groupId>
+              <artifactId>java18</artifactId>
+              <version>1.0</version>
+            </signature>
+          </configuration>
+        </plugin>
+
         <!--This plugin's configuration is used to store Eclipse m2e settings only. It has no influence on the Maven build itself.-->
         <plugin>
           <groupId>org.eclipse.m2e</groupId>
@@ -286,6 +300,10 @@
         <configuration>
           <useSystemClassLoader>false</useSystemClassLoader>
         </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>animal-sniffer-maven-plugin</artifactId>
       </plugin>
     </plugins>
   </build>
