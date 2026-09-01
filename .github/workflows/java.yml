@@ -14,6 +14,13 @@ jobs:
       fail-fast: false
       matrix:
         java: ["8", "11", "17"]
+        include:
+          - java: "8"
+            maven_goals: verify
+          - java: "11"
+            maven_goals: verify
+          - java: "17"
+            maven_goals: "verify spotless:check animal-sniffer:check"
 
     steps:
       - uses: actions/checkout@v3
@@ -25,13 +32,5 @@ jobs:
           distribution: "temurin"
           cache: maven
 
-      - id: spotless
-        run: mvn spotless:check animal-sniffer:check test verify
-      # - if: failure()
-      #   name: Test Spotless Failed
-      # run: |
-      #   wget https://raw.githubusercontent.com/hightouchio/circleci-notifications/master/slack-notify-branch.sh
-      #   chmod u+x slack-notify-branch.sh
-      #   BUILD_STATUS="Failed" NOTIFY_BRANCH="master" ./slack-notify-branch.sh
-      - if: steps.spotless.conclusion == 'success'
-        run: mvn -B package
+      - name: Test
+        run: mvn -B ${{ matrix.maven_goals }}
