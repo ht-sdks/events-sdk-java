@@ -28,7 +28,8 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <java.version>8</java.version>
-    <kotlin.version>1.7.20</kotlin.version>
+    <kotlin.version>2.4.10</kotlin.version>
+    <kotlin.compiler.jvmTarget>1.8</kotlin.compiler.jvmTarget>
     <spotless.version>2.27.2</spotless.version>
     <animal-sniffer.version>1.23</animal-sniffer.version>
     <retrofit.version>2.9.0</retrofit.version>
