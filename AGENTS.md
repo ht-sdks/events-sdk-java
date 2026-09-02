@@ -173,7 +173,7 @@ The `analytics-spring-boot-starter` module uses Spring Boot 2.x. Spring Boot 3.x
 
 ### Spotless / Google Java Format Version Coupling
 
-CI runs Spotless on JDK 17. The plugin (`2.46.1`) requires JRE 11+. Google Java Format `1.17.0` is the minimum Spotless 2.46.1 accepts on JDK 21 and also runs on the JDK 17 CI job. Newer Spotless/GJF versions may be used without raising the library's Java 8 baseline. Newer GJF typically needs JDK 11+ to execute and may reformat existing files.
+CI runs Spotless on JDK 17. The plugin (`3.10.1`) requires JRE 17+ and ships `plexus-utils` 4.1.0 (CVE-2025-67030 is fixed in 4.0.3+). Google Java Format stays pinned at `1.17.0` so formatting does not change. Animal Sniffer `1.27` has no newer release; patched `maven-core`, `maven-shared-utils`, and `plexus-utils` versions are forced via plugin `<dependencies>` in the root POM. Newer Spotless/GJF versions may be used without raising the library's Java 8 baseline. Newer GJF typically needs JDK 11+ to execute and may reformat existing files.
 
 ### Transitive Dependency Conflicts
 
