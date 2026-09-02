@@ -248,6 +248,7 @@ public class Analytics {
       this.queueCapacity = capacity;
       return this;
     }
+
     /** Set the queueSize at which flushes should be triggered. */
     @Beta
     public Builder flushQueueSize(int flushQueueSize) {
