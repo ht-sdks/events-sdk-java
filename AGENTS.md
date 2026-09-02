@@ -173,7 +173,7 @@ The `analytics-spring-boot-starter` module uses Spring Boot 2.x. Spring Boot 3.x
 
 ### Spotless / Google Java Format Version Coupling
 
-CI runs Spotless on JDK 17. The plugin (`2.27.2`) and Google Java Format `1.5` can still run there, and newer Spotless/GJF versions may be used without raising the library's Java 8 baseline. Newer GJF typically needs JDK 11+ to execute and may reformat existing files.
+CI runs Spotless on JDK 17. The plugin (`2.46.1`) requires JRE 11+ and Google Java Format `1.5` can still run there. Newer Spotless/GJF versions may be used without raising the library's Java 8 baseline. Newer GJF typically needs JDK 11+ to execute and may reformat existing files.
 
 ### Transitive Dependency Conflicts
 
