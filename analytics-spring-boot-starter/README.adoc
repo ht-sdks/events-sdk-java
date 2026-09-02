@@ -1,7 +1,9 @@
 = Spring Boot starter for Hightouch Analytics
 
 This module provides a link:https://projects.spring.io/spring-boot/[Spring Boot]
-starter for the Hightouch client.
+starter for the Hightouch client. It targets Spring Boot 3.5.x (Java 17+) and
+registers auto-configuration via
+`META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
 
 == Usage
 
