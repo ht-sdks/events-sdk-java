@@ -169,7 +169,7 @@ JAVA_HOME=/path/to/jdk25 mvn -B verify
 
 ### Spring Boot Version Constraints
 
-The `analytics-spring-boot-starter` module compiles against Spring Boot 3.5.x (last OSS 3.x line) so published artifacts resolve Spring Framework 6.2.19+, which includes the CVE-2025-41249 fix. Spring Framework 6 and Spring Boot 3 require JDK 17+ to compile against; the starter is therefore only in the Maven reactor when the JDK is 17 or newer. The rest of the SDK stays on Java 8. Spring Boot 4.x splits `spring-boot-autoconfigure` into per-technology modules — do not upgrade to 4.x without reviewing that packaging change.
+The `analytics-spring-boot-starter` module compiles against Spring Boot 3.x and is only in the Maven reactor on JDK 17+. The rest of the SDK stays on Java 8. Spring Boot 4.x splits `spring-boot-autoconfigure` into per-technology modules — do not upgrade to 4.x without reviewing that packaging change.
 
 ### Spotless / Google Java Format Version Coupling
 

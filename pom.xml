@@ -24,9 +24,8 @@
     <module>analytics-cli</module>
   </modules>
 
-  <!-- Spring Boot 3.5 / Framework 6.2 require JDK 17 to compile against. The
-       starter stays out of the reactor on JDK 8 and 11 so those CI jobs keep
-       verifying the Java 8 SDK. -->
+  <!-- Spring Boot 3 requires JDK 17. The starter stays out of the reactor on
+       older JDKs so those CI jobs keep verifying the Java 8 SDK. -->
   <profiles>
     <profile>
       <id>jdk17-plus</id>
