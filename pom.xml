@@ -22,8 +22,21 @@
     <module>analytics</module>
     <module>analytics-sample</module>
     <module>analytics-cli</module>
-    <module>analytics-spring-boot-starter</module>
   </modules>
+
+  <!-- Spring Boot 3 requires JDK 17. The starter stays out of the reactor on
+       older JDKs so those CI jobs keep verifying the Java 8 SDK. -->
+  <profiles>
+    <profile>
+      <id>jdk17-plus</id>
+      <activation>
+        <jdk>[17,)</jdk>
+      </activation>
+      <modules>
+        <module>analytics-spring-boot-starter</module>
+      </modules>
+    </profile>
+  </profiles>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -46,7 +59,7 @@
     <okio.version>3.6.0</okio.version>
     <guava.version>33.7.1-jre</guava.version>
     <backo.version>1.0.0</backo.version>
-    <spring.boot.version>2.7.5</spring.boot.version>
+    <spring.boot.version>3.5.16</spring.boot.version>
     <docopt.version>0.6.0.20150202</docopt.version>
 
     <!-- Test Dependencies -->
