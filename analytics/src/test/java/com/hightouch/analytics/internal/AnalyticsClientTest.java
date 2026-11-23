@@ -389,7 +389,7 @@ public class AnalyticsClientTest {
   }
 
   @Test
-  public void batchRetriesForHTTP5xxErrors() {
+  public void batchRetriesForTimeoutAndServerErrors() {
     AnalyticsClient client = newClient();
     TrackMessage trackMessage = TrackMessage.builder("foo").userId("bar").build();
     Batch batch = batchFor(trackMessage);
@@ -400,7 +400,7 @@ public class AnalyticsClientTest {
     Response<UploadResponse> failResponse =
         Response.error(500, ResponseBody.create(null, "Server Error"));
     when(hightouchService.upload(null, batch))
-        .thenReturn(Calls.response(failResponse))
+        .thenReturn(Calls.response(Response.error(408, ResponseBody.create(null, ""))))
         .thenReturn(Calls.response(failResponse))
         .thenReturn(Calls.response(failResponse))
         .thenReturn(Calls.response(successResponse));
@@ -438,14 +438,30 @@ public class AnalyticsClientTest {
   }
 
   @Test
-  public void batchDoesNotRetryForNon5xxAndNon429HTTPErrors() {
+  public void rejectedSourceRecoversWithNoOrdinaryRetries() {
+    AnalyticsClient client = newClient();
+    TrackMessage message = TrackMessage.builder("foo").userId("bar").build();
+    Batch batch = batchFor(message);
+    when(hightouchService.upload(null, batch))
+        .thenReturn(Calls.response(Response.error(401, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.error(404, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.success(200, response)));
+
+    new BatchUploadTask(client, BACKO, batch, 0).run();
+
+    verify(hightouchService, times(3)).upload(null, batch);
+    verify(callback).success(message);
+  }
+
+  @Test
+  public void batchDoesNotRetryBadRequests() {
     AnalyticsClient client = newClient();
     TrackMessage trackMessage = TrackMessage.builder("foo").userId("bar").build();
     Batch batch = batchFor(trackMessage);
 
     // Throw a HTTP error that should not be retried.
     Response<UploadResponse> failResponse =
-        Response.error(404, ResponseBody.create(null, "Not Found"));
+        Response.error(400, ResponseBody.create(null, "Bad Request"));
     when(hightouchService.upload(null, batch)).thenReturn(Calls.response(failResponse));
 
     BatchUploadTask batchUploadTask = new BatchUploadTask(client, BACKO, batch, DEFAULT_RETRIES);

@@ -344,6 +344,7 @@ public class AnalyticsClient {
     private final Backo backo;
     final Batch batch;
     private final int maxRetries;
+    private boolean configurationRejected;
 
     static BatchUploadTask create(AnalyticsClient client, Batch batch, int maxRetries) {
       return new BatchUploadTask(client, BACKO, batch, maxRetries);
@@ -368,6 +369,7 @@ public class AnalyticsClient {
     boolean upload() {
       client.log.print(VERBOSE, "Uploading batch %s.", batch.sequence());
 
+      configurationRejected = false;
       try {
         Call<UploadResponse> call = client.service.upload(client.uploadUrl, batch);
         Response<UploadResponse> response = call.execute();
@@ -385,9 +387,19 @@ public class AnalyticsClient {
         }
 
         int status = response.code();
-        if (is5xx(status)) {
+        if (status == 401 || status == 403 || status == 404) {
+          configurationRejected = true;
           client.log.print(
-              DEBUG, "Could not upload batch %s due to server error. Retrying.", batch.sequence());
+              ERROR,
+              "HTTP %s. Check the write key and endpoint. Retaining batch %s.",
+              status,
+              batch.sequence());
+          response.errorBody().close();
+          return true;
+        }
+        if (status == 408 || is5xx(status)) {
+          client.log.print(
+              DEBUG, "Could not upload batch %s (HTTP %s). Retrying.", batch.sequence(), status);
           return true;
         } else if (status == 429) {
           client.log.print(
@@ -415,11 +427,19 @@ public class AnalyticsClient {
     @Override
     public void run() {
       int attempt = 0;
-      for (; attempt <= maxRetries; attempt++) {
+      int backoffAttempt = 0;
+      while (attempt <= maxRetries) {
         boolean retry = upload();
         if (!retry) return;
         try {
-          backo.sleep(attempt);
+          if (configurationRejected && client.isShutDown.get()) {
+            notifyCallbacksWithException(
+                batch, new IOException("Client closed while waiting for source recovery"));
+            return;
+          }
+          if (!configurationRejected) attempt++;
+          backo.sleep(backoffAttempt);
+          backoffAttempt = Math.min(16, backoffAttempt + 1);
         } catch (InterruptedException e) {
           client.log.print(
               DEBUG, "Thread interrupted while backing off for batch %s.", batch.sequence());
