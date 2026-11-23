@@ -4,7 +4,6 @@ import static com.hightouch.analytics.internal.FlushMessage.POISON;
 import static com.hightouch.analytics.internal.StopMessage.STOP;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -46,7 +45,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.ArgumentMatcher;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.invocation.InvocationOnMock;
@@ -449,6 +447,13 @@ public class AnalyticsClientTest {
 
     new BatchUploadTask(client, BACKO, batch, 0).run();
 
+    ArgumentCaptor<Runnable> probes = ArgumentCaptor.forClass(Runnable.class);
+    verify(networkExecutor, timeout(1000)).submit(probes.capture());
+    verify(hightouchService).upload(null, batch);
+    probes.getValue().run();
+    verify(networkExecutor, timeout(1000).times(2)).submit(probes.capture());
+    probes.getValue().run();
+
     verify(hightouchService, times(3)).upload(null, batch);
     verify(callback).success(message);
   }
@@ -490,7 +495,7 @@ public class AnalyticsClientTest {
   }
 
   @Test
-  public void givesUpAfterMaxRetries() {
+  public void defersAfterMaxRetries() {
     AnalyticsClient client = newClient();
     TrackMessage trackMessage = TrackMessage.builder("foo").userId("bar").build();
     Batch batch = batchFor(trackMessage);
@@ -511,16 +516,7 @@ public class AnalyticsClientTest {
     // DEFAULT_RETRIES == maxRetries
     // tries 11(one normal run + 10 retries) even though default is 50 in AnalyticsClient.java
     verify(hightouchService, times(11)).upload(null, batch);
-    verify(callback)
-        .failure(
-            eq(trackMessage),
-            argThat(
-                new ArgumentMatcher<IOException>() {
-                  @Override
-                  public boolean matches(IOException exception) {
-                    return exception.getMessage().equals("11 retries exhausted");
-                  }
-                }));
+    verify(callback, never()).failure(eq(trackMessage), any(IOException.class));
   }
 
   @Test
@@ -545,16 +541,7 @@ public class AnalyticsClientTest {
     // DEFAULT_RETRIES == maxRetries
     // tries 11(one normal run + 10 retries)
     verify(hightouchService, times(4)).upload(null, batch);
-    verify(callback)
-        .failure(
-            eq(trackMessage),
-            argThat(
-                new ArgumentMatcher<IOException>() {
-                  @Override
-                  public boolean matches(IOException exception) {
-                    return exception.getMessage().equals("4 retries exhausted");
-                  }
-                }));
+    verify(callback, never()).failure(eq(trackMessage), any(IOException.class));
   }
 
   @Test
@@ -644,7 +631,7 @@ public class AnalyticsClientTest {
   }
 
   @Test
-  public void neverRetries() {
+  public void defersWhenFastRetriesDisabled() {
     AnalyticsClient client = newClient();
     TrackMessage trackMessage = TrackMessage.builder("foo").userId("bar").build();
     Batch batch = batchFor(trackMessage);
@@ -664,16 +651,7 @@ public class AnalyticsClientTest {
 
     // runs once but never retries
     verify(hightouchService, times(1)).upload(null, batch);
-    verify(callback)
-        .failure(
-            eq(trackMessage),
-            argThat(
-                new ArgumentMatcher<IOException>() {
-                  @Override
-                  public boolean matches(IOException exception) {
-                    return exception.getMessage().equals("1 retries exhausted");
-                  }
-                }));
+    verify(callback, never()).failure(eq(trackMessage), any(IOException.class));
   }
 
   /**
