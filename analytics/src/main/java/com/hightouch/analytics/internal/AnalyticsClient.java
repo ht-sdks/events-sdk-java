@@ -371,22 +371,13 @@ public class AnalyticsClient {
     long delay = ready ? 0 : Math.max(1, Math.min(60000, task.backo.backoff(probeAttempt)));
     if (!ready) probeAttempt = Math.min(16, probeAttempt + 1);
     flushScheduler.schedule(
-        new Runnable() {
-          @Override
-          public void run() {
-            if (isShutDown.get()) return;
-            try {
-              networkExecutor.submit(
-                  new Runnable() {
-                    @Override
-                    public void run() {
-                      runProbe();
-                    }
-                  });
-            } catch (RejectedExecutionException unavailable) {
-              synchronized (deferred) {
-                if (!isShutDown.get()) scheduleProbe(task, false);
-              }
+        () -> {
+          if (isShutDown.get()) return;
+          try {
+            networkExecutor.submit(this::runProbe);
+          } catch (RejectedExecutionException unavailable) {
+            synchronized (deferred) {
+              if (!isShutDown.get()) scheduleProbe(task, false);
             }
           }
         },
