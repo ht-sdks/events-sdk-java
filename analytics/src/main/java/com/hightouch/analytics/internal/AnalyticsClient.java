@@ -26,7 +26,6 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
@@ -68,9 +67,6 @@ public class AnalyticsClient {
   private final ScheduledExecutorService flushScheduler;
   private final AtomicBoolean isShutDown;
   private final String writeKey;
-  private final LinkedList<BatchUploadTask> deferred = new LinkedList<>();
-  private BatchUploadTask activeProbe;
-  private int probeAttempt;
 
   public static AnalyticsClient create(
       HttpUrl uploadUrl,
@@ -130,13 +126,14 @@ public class AnalyticsClient {
 
     this.currentQueueSizeInBytes = 0;
 
-    flushScheduler = Executors.newScheduledThreadPool(1, threadFactory);
     if (!isShutDown.get()) looperExecutor.submit(new Looper());
+
+    flushScheduler = Executors.newScheduledThreadPool(1, threadFactory);
     flushScheduler.scheduleAtFixedRate(
         new Runnable() {
           @Override
           public void run() {
-            messageQueue.offer(FlushMessage.POISON);
+            flush();
           }
         },
         flushIntervalInMillis,
@@ -226,14 +223,6 @@ public class AnalyticsClient {
     if (isShutDown.compareAndSet(false, true)) {
       final long start = System.currentTimeMillis();
 
-      List<BatchUploadTask> abandoned;
-      synchronized (deferred) {
-        abandoned = new ArrayList<>(deferred);
-        deferred.clear();
-        deferred.notifyAll();
-      }
-      for (BatchUploadTask task : abandoned) task.closed();
-
       // first let's tell the system to stop
       enqueue(StopMessage.STOP);
 
@@ -283,11 +272,6 @@ public class AnalyticsClient {
       int contextSize = getGsonInstance().toJson(CONTEXT).getBytes(ENCODING).length;
       try {
         while (!stop) {
-          synchronized (deferred) {
-            while ((!deferred.isEmpty() || activeProbe != null) && !isShutDown.get()) {
-              deferred.wait();
-            }
-          }
           Message message = messageQueue.take();
 
           if (message == StopMessage.STOP) {
@@ -346,63 +330,6 @@ public class AnalyticsClient {
       }
       log.print(VERBOSE, "Looper stopped");
     }
-  }
-
-  /** Park a batch on this source without occupying a network worker during backoff. */
-  private boolean defer(BatchUploadTask task, boolean required) {
-    synchronized (deferred) {
-      boolean recovering = activeProbe != null || !deferred.isEmpty();
-      if (!required && !recovering) return false;
-      if (!isShutDown.get()) {
-        deferred.addLast(task);
-        if (!recovering) {
-          scheduleProbe(task, false);
-          deferred.notifyAll();
-        }
-        return true;
-      }
-    }
-    task.closed();
-    return true;
-  }
-
-  // Called with the deferred queue locked. One timer owns admission to the network executor.
-  private void scheduleProbe(BatchUploadTask task, boolean ready) {
-    long delay = ready ? 0 : Math.max(1, Math.min(60000, task.backo.backoff(probeAttempt)));
-    if (!ready) probeAttempt = Math.min(16, probeAttempt + 1);
-    flushScheduler.schedule(
-        () -> {
-          if (isShutDown.get()) return;
-          try {
-            networkExecutor.submit(this::runProbe);
-          } catch (RejectedExecutionException unavailable) {
-            synchronized (deferred) {
-              if (!isShutDown.get()) scheduleProbe(task, false);
-            }
-          }
-        },
-        delay,
-        TimeUnit.MILLISECONDS);
-  }
-
-  private void runProbe() {
-    BatchUploadTask task;
-    synchronized (deferred) {
-      if (isShutDown.get()) return;
-      activeProbe = task = deferred.removeFirst();
-    }
-
-    boolean retry = task.upload();
-    synchronized (deferred) {
-      activeProbe = null;
-      boolean closed = isShutDown.get();
-      if (retry && !closed) deferred.addFirst(task);
-      if (!retry) probeAttempt = 0;
-      if (deferred.isEmpty()) deferred.notifyAll();
-      else if (!closed) scheduleProbe(deferred.getFirst(), !retry);
-      if (!retry || !closed) return;
-    }
-    task.closed();
   }
 
   static class BatchUploadTask implements Runnable {
@@ -489,28 +416,22 @@ public class AnalyticsClient {
 
     @Override
     public void run() {
-      for (int attempt = 0; ; attempt++) {
-        if (client.defer(this, false) || !upload()) return;
-        if (client.defer(this, attempt >= maxRetries)) return;
+      int attempt = 0;
+      for (; attempt <= maxRetries; attempt++) {
+        boolean retry = upload();
+        if (!retry) return;
         try {
-          long delay = backo.backoff(Math.min(16, attempt));
-          synchronized (client.deferred) {
-            if (delay > 0
-                && client.deferred.isEmpty()
-                && client.activeProbe == null
-                && !client.isShutDown.get()) client.deferred.wait(delay);
-          }
+          backo.sleep(attempt);
         } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          client.defer(this, true);
+          client.log.print(
+              DEBUG, "Thread interrupted while backing off for batch %s.", batch.sequence());
           return;
         }
       }
-    }
 
-    private void closed() {
+      client.log.print(ERROR, "Could not upload batch %s. Retries exhausted.", batch.sequence());
       notifyCallbacksWithException(
-          batch, new IOException("Client closed while delivery was deferred"));
+          batch, new IOException(Integer.toString(attempt) + " retries exhausted"));
     }
 
     private static boolean is5xx(int status) {
