@@ -436,13 +436,13 @@ public class AnalyticsClientTest {
   }
 
   @Test
-  public void rejectedSourceRecoversWithNoOrdinaryRetries() {
+  public void transientFailureRecoversWithNoOrdinaryRetries() {
     AnalyticsClient client = newClient();
     TrackMessage message = TrackMessage.builder("foo").userId("bar").build();
     Batch batch = batchFor(message);
     when(hightouchService.upload(null, batch))
-        .thenReturn(Calls.response(Response.error(401, ResponseBody.create(null, ""))))
-        .thenReturn(Calls.response(Response.error(404, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.error(503, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.error(408, ResponseBody.create(null, ""))))
         .thenReturn(Calls.response(Response.success(200, response)));
 
     new BatchUploadTask(client, BACKO, batch, 0).run();

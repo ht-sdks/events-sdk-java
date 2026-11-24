@@ -426,7 +426,6 @@ public class AnalyticsClient {
     private final Backo backo;
     final Batch batch;
     private final int maxRetries;
-    private boolean configurationRejected;
 
     static BatchUploadTask create(AnalyticsClient client, Batch batch, int maxRetries) {
       return new BatchUploadTask(client, BACKO, batch, maxRetries);
@@ -451,7 +450,6 @@ public class AnalyticsClient {
     boolean upload() {
       client.log.print(VERBOSE, "Uploading batch %s.", batch.sequence());
 
-      configurationRejected = false;
       try {
         Call<UploadResponse> call = client.service.upload(client.uploadUrl, batch);
         Response<UploadResponse> response = call.execute();
@@ -469,16 +467,6 @@ public class AnalyticsClient {
         }
 
         int status = response.code();
-        if (status == 401 || status == 403 || status == 404) {
-          configurationRejected = true;
-          client.log.print(
-              ERROR,
-              "HTTP %s. Check the write key and endpoint. Retaining batch %s.",
-              status,
-              batch.sequence());
-          response.errorBody().close();
-          return true;
-        }
         if (status == 408 || is5xx(status)) {
           response.errorBody().close();
           client.log.print(
@@ -512,7 +500,7 @@ public class AnalyticsClient {
     public void run() {
       for (int attempt = 0; ; attempt++) {
         if (client.defer(this, false) || !upload()) return;
-        if (client.defer(this, configurationRejected || attempt >= maxRetries)) return;
+        if (client.defer(this, attempt >= maxRetries)) return;
         try {
           long delay = backo.backoff(Math.min(16, attempt));
           synchronized (client.deferred) {
