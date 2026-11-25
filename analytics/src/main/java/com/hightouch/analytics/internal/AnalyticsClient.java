@@ -459,10 +459,19 @@ public class AnalyticsClient {
       this.maxRetries = maxRetries;
     }
 
-    private void notifyCallbacksWithException(Batch batch, Exception exception) {
+    private void notifyCallbacks(Batch batch, Exception exception) {
       for (Message message : batch.batch()) {
         for (Callback callback : client.callbacks) {
-          callback.failure(message, exception);
+          try {
+            if (exception == null) callback.success(message);
+            else callback.failure(message, exception);
+          } catch (RuntimeException callbackError) {
+            client.log.print(
+                ERROR,
+                callbackError,
+                "Delivery callback threw for message %s.",
+                message.messageId());
+          }
         }
       }
     }
@@ -478,12 +487,7 @@ public class AnalyticsClient {
         if (response.isSuccessful()) {
           client.log.print(VERBOSE, "Uploaded batch %s.", batch.sequence());
 
-          for (Message message : batch.batch()) {
-            for (Callback callback : client.callbacks) {
-              callback.success(message);
-            }
-          }
-
+          notifyCallbacks(batch, null);
           return false;
         }
 
@@ -501,7 +505,7 @@ public class AnalyticsClient {
         }
 
         client.log.print(DEBUG, "Could not upload batch %s. Giving up.", batch.sequence());
-        notifyCallbacksWithException(batch, new IOException(response.errorBody().string()));
+        notifyCallbacks(batch, new IOException(response.errorBody().string()));
 
         return false;
       } catch (IOException error) {
@@ -511,7 +515,7 @@ public class AnalyticsClient {
       } catch (Exception exception) {
         client.log.print(DEBUG, "Could not upload batch %s. Giving up.", batch.sequence());
 
-        notifyCallbacksWithException(batch, exception);
+        notifyCallbacks(batch, exception);
 
         return false;
       }
@@ -540,8 +544,7 @@ public class AnalyticsClient {
 
     private void closed() {
       releaseQueueSlots();
-      notifyCallbacksWithException(
-          batch, new IOException("Client closed while delivery was deferred"));
+      notifyCallbacks(batch, new IOException("Client closed while delivery was deferred"));
     }
 
     private static boolean is5xx(int status) {

@@ -5,6 +5,7 @@ import static com.hightouch.analytics.internal.StopMessage.STOP;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
@@ -495,6 +496,32 @@ public class AnalyticsClientTest {
           .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(cooldownMillis));
       assertThat(times.get(2) - times.get(1))
           .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(cooldownMillis));
+    } finally {
+      client.shutdown();
+    }
+  }
+
+  @Test
+  public void throwingFailureCallbackDoesNotStrandNextBatch() {
+    networkExecutor = Executors.newSingleThreadExecutor();
+    AnalyticsClient client = newClient();
+    TrackMessage first = TrackMessage.builder("first").userId("user").build();
+    TrackMessage second = TrackMessage.builder("second").userId("user").build();
+    Batch batch = batchFor(first);
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenReturn(Calls.response(Response.success(200, response)));
+    when(hightouchService.upload(null, batch))
+        .thenReturn(Calls.response(Response.error(503, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.error(400, ResponseBody.create(null, ""))));
+    doThrow(new IllegalStateException("listener")).when(callback).failure(eq(first), any());
+
+    try {
+      new BatchUploadTask(client, BACKO, batch, 0).run();
+      verify(callback, timeout(3000)).failure(eq(first), any());
+      client.enqueue(second);
+      client.flush();
+      verify(callback, timeout(3000)).success(second);
+      verify(callback, times(1)).failure(eq(first), any());
     } finally {
       client.shutdown();
     }
