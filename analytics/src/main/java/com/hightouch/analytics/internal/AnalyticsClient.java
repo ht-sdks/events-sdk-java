@@ -33,6 +33,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import okhttp3.HttpUrl;
 import retrofit2.Call;
 import retrofit2.Response;
@@ -57,6 +58,7 @@ public class AnalyticsClient {
 
   private final BlockingQueue<Message> messageQueue;
   private final Semaphore queueSlots;
+  private final ReentrantReadWriteLock publication = new ReentrantReadWriteLock();
   private final HttpUrl uploadUrl;
   private final HightouchService service;
   private final int size;
@@ -143,7 +145,7 @@ public class AnalyticsClient {
         new Runnable() {
           @Override
           public void run() {
-            messageQueue.offer(FlushMessage.POISON);
+            offer(FlushMessage.POISON);
           }
         },
         flushIntervalInMillis,
@@ -178,22 +180,37 @@ public class AnalyticsClient {
   }
 
   public boolean offer(Message message) {
-    if (message == StopMessage.STOP || message == FlushMessage.POISON)
-      return messageQueue.offer(message);
-    if (!queueSlots.tryAcquire()) return false;
-    if (messageQueue.offer(message)) return true;
-    queueSlots.release();
-    return false;
+    if (!publication.readLock().tryLock()) return false;
+    try {
+      if (isShutDown.get()) return false;
+      if (message == StopMessage.STOP || message == FlushMessage.POISON)
+        return messageQueue.offer(message);
+      if (!queueSlots.tryAcquire()) return false;
+      if (messageQueue.offer(message)) return true;
+      queueSlots.release();
+      return false;
+    } finally {
+      publication.readLock().unlock();
+    }
   }
 
   private void putMessage(Message message) throws InterruptedException {
-    queueSlots.acquire();
+    boolean event = message != FlushMessage.POISON && message != StopMessage.STOP;
+    if (event) queueSlots.acquire();
+    publication.readLock().lock();
     try {
-      messageQueue.put(message);
-    } catch (InterruptedException interrupted) {
-      queueSlots.release();
-      throw interrupted;
+      if (message == StopMessage.STOP || !isShutDown.get()) {
+        messageQueue.put(message);
+        return;
+      }
+      log.print(ERROR, "Attempt to enqueue a message when shutdown has been called %s.", message);
+    } catch (InterruptedException e) {
+      if (event) queueSlots.release();
+      throw e;
+    } finally {
+      publication.readLock().unlock();
     }
+    if (event) queueSlots.release();
   }
 
   public void enqueue(Message message) {
@@ -213,7 +230,7 @@ public class AnalyticsClient {
         if (messageByteSize <= MSG_MAX_SIZE) {
           if (isBackPressuredAfterSize(messageByteSize)) {
             this.currentQueueSizeInBytes = messageByteSize;
-            messageQueue.put(FlushMessage.POISON);
+            putMessage(FlushMessage.POISON);
             putMessage(message);
 
             log.print(VERBOSE, "Maximum storage size has been hit Flushing...");
@@ -228,7 +245,7 @@ public class AnalyticsClient {
               "Message was above individual limit. MessageId: " + message.messageId());
         }
       } else {
-        messageQueue.put(message);
+        putMessage(message);
       }
     } catch (InterruptedException e) {
       log.print(ERROR, e, "Interrupted while adding message %s.", message);
@@ -256,7 +273,12 @@ public class AnalyticsClient {
       for (BatchUploadTask task : abandoned) task.closed();
 
       // first let's tell the system to stop
-      enqueue(StopMessage.STOP);
+      publication.writeLock().lock();
+      try {
+        enqueue(StopMessage.STOP);
+      } finally {
+        publication.writeLock().unlock();
+      }
 
       // we can shutdown the flush scheduler without worrying
       flushScheduler.shutdownNow();

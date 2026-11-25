@@ -466,6 +466,29 @@ public class AnalyticsClientTest {
     verify(callback).success(message);
   }
 
+  @Test(timeout = 5000)
+  public void producerWaitingForCapacityCannotPublishBehindStop() throws Exception {
+    messageQueue = new LinkedBlockingQueue<>(1);
+    AnalyticsClient client = newClient(1);
+    Message message = TrackMessage.builder("queued").userId("user").build();
+    ArgumentCaptor<Runnable> tasks = ArgumentCaptor.forClass(Runnable.class);
+    client.enqueue(message);
+    client.enqueue(message);
+    verify(networkExecutor, timeout(1000).times(2)).submit(tasks.capture());
+
+    Thread producer = new Thread(() -> client.enqueue(message));
+    producer.start();
+    while (producer.getState() != Thread.State.WAITING) Thread.yield();
+    client.shutdown();
+    assertThat(client.offer(message)).isFalse();
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenReturn(Calls.response(Response.success(200, response)));
+    tasks.getValue().run(); // Releases a permit after STOP has been consumed.
+    producer.join(1000);
+    assertThat(producer.isAlive()).isFalse();
+    assertThat(messageQueue).isEmpty();
+  }
+
   @Test
   public void countsBatchesWaitingInTheNetworkExecutorUntilDeliveryCompletes() {
     messageQueue = new LinkedBlockingQueue<>(1);
