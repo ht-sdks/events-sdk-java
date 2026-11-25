@@ -540,7 +540,7 @@ public class AnalyticsClient {
     @Override
     public void run() {
       for (int attempt = 0; ; attempt++) {
-        if (client.defer(this, false) || !upload()) return;
+        if (client.defer(this, attempt > 0 && client.isShutDown.get()) || !upload()) return;
         if (client.defer(this, attempt >= maxRetries)) return;
         try {
           long delay = backo.backoff(Math.min(16, attempt));

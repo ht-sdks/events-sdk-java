@@ -466,6 +466,27 @@ public class AnalyticsClientTest {
     verify(callback).success(message);
   }
 
+  @Test
+  public void transientResponseDuringShutdownFinishesWithoutBurstingRetries() {
+    AnalyticsClient client = newClient();
+    Message message = TrackMessage.builder("closing").userId("user").build();
+    Batch batch = batchFor(message);
+    when(hightouchService.upload(null, batch))
+        .thenAnswer(
+            call -> {
+              isShutDown.set(true);
+              return Calls.response(Response.error(429, ResponseBody.create(null, "")));
+            });
+    try {
+      new BatchUploadTask(client, BACKO, batch, 3).run();
+      verify(hightouchService).upload(null, batch);
+      verify(callback).failure(eq(message), any(IOException.class));
+    } finally {
+      isShutDown.set(false);
+      client.shutdown();
+    }
+  }
+
   @Test(timeout = 5000)
   public void producerWaitingForCapacityCannotPublishBehindStop() throws Exception {
     messageQueue = new LinkedBlockingQueue<>(1);
