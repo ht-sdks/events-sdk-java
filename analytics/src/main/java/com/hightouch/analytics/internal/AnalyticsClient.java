@@ -346,8 +346,11 @@ public class AnalyticsClient {
                 BatchUploadTask.create(AnalyticsClient.this, batch, maximumRetries);
             task.queueSlots = messages.size();
             if (!defer(task, false)) {
-              task.releaseQueueSlots();
-              networkExecutor.submit(task);
+              try {
+                networkExecutor.submit(task);
+              } catch (RejectedExecutionException rejected) {
+                task.notifyCallbacks(rejected);
+              }
             }
 
             currentBatchSize.set(0);
@@ -418,10 +421,7 @@ public class AnalyticsClient {
       activeProbe = null;
       boolean closed = isShutDown.get();
       if (retry && !closed) deferred.addLast(task);
-      if (!retry) {
-        probeAttempt = 0;
-        task.releaseQueueSlots();
-      }
+      if (!retry) probeAttempt = 0;
       if (deferred.isEmpty()) deferred.notifyAll();
       else if (!closed) scheduleProbe(task, !retry);
       if (!retry || !closed) return;
@@ -443,11 +443,6 @@ public class AnalyticsClient {
     private final int maxRetries;
     private int queueSlots;
 
-    private void releaseQueueSlots() {
-      client.queueSlots.release(queueSlots);
-      queueSlots = 0;
-    }
-
     static BatchUploadTask create(AnalyticsClient client, Batch batch, int maxRetries) {
       return new BatchUploadTask(client, BACKO, batch, maxRetries);
     }
@@ -460,6 +455,8 @@ public class AnalyticsClient {
     }
 
     private void notifyCallbacks(Exception exception) {
+      // A callback may enqueue again, so release admission before invoking it.
+      client.queueSlots.release(queueSlots);
       for (Message message : batch.batch()) {
         for (Callback callback : client.callbacks) {
           try {
@@ -540,7 +537,6 @@ public class AnalyticsClient {
     }
 
     private void closed() {
-      releaseQueueSlots();
       notifyCallbacks(new IOException("Client closed while delivery was deferred"));
     }
 

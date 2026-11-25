@@ -5,6 +5,7 @@ import static com.hightouch.analytics.internal.StopMessage.STOP;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -93,11 +94,15 @@ public class AnalyticsClientTest {
   // Defers loading the client until tests can initialize all required
   // dependencies.
   AnalyticsClient newClient() {
+    return newClient(50);
+  }
+
+  AnalyticsClient newClient(int batchSize) {
     return new AnalyticsClient(
         messageQueue,
         null,
         hightouchService,
-        50,
+        batchSize,
         TimeUnit.HOURS.toMillis(1),
         0,
         MAX_BATCH_SIZE,
@@ -459,6 +464,39 @@ public class AnalyticsClientTest {
 
     verify(hightouchService, times(3)).upload(null, batch);
     verify(callback).success(message);
+  }
+
+  @Test
+  public void countsBatchesWaitingInTheNetworkExecutorUntilDeliveryCompletes() {
+    messageQueue = new LinkedBlockingQueue<>(1);
+    AnalyticsClient client = newClient(1);
+    Message message = TrackMessage.builder("queued").userId("user").build();
+    ArgumentCaptor<Runnable> tasks = ArgumentCaptor.forClass(Runnable.class);
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenReturn(Calls.response(Response.success(200, response)))
+        .thenReturn(Calls.response(Response.error(503, ResponseBody.create(null, ""))));
+    try {
+      client.enqueue(message);
+      client.enqueue(message);
+      verify(networkExecutor, timeout(1000).times(2)).submit(tasks.capture());
+      assertThat(client.offer(message)).isFalse();
+      doAnswer(
+              call -> {
+                assertThat(client.offer(message)).isTrue();
+                return null;
+              })
+          .when(callback)
+          .success(message);
+      tasks.getAllValues().get(0).run();
+      verify(callback).success(message);
+      verify(networkExecutor, timeout(1000).times(3)).submit(tasks.capture());
+      List<Runnable> submitted = tasks.getAllValues();
+      submitted.get(submitted.size() - 2).run(); // Starts recovery.
+      submitted.get(submitted.size() - 1).run(); // Transfers from executor to deferred queue.
+      assertThat(client.offer(message)).isFalse();
+    } finally {
+      client.shutdown();
+    }
   }
 
   @Test
