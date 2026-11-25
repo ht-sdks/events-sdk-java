@@ -28,6 +28,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -55,6 +56,7 @@ public class AnalyticsClient {
   }
 
   private final BlockingQueue<Message> messageQueue;
+  private final Semaphore queueSlots;
   private final HttpUrl uploadUrl;
   private final HightouchService service;
   private final int size;
@@ -71,6 +73,7 @@ public class AnalyticsClient {
   private final LinkedList<BatchUploadTask> deferred = new LinkedList<>();
   private BatchUploadTask activeProbe;
   private int probeAttempt;
+  private boolean closedDuringRecovery;
 
   public static AnalyticsClient create(
       HttpUrl uploadUrl,
@@ -116,6 +119,10 @@ public class AnalyticsClient {
       AtomicBoolean isShutDown,
       String writeKey) {
     this.messageQueue = messageQueue;
+    // Share admission capacity between the input queue, the batch being built and parked batches.
+    long capacity = (long) messageQueue.remainingCapacity() + maxQueueSize;
+    this.queueSlots =
+        new Semaphore((int) Math.min(Integer.MAX_VALUE - messageQueue.size(), capacity));
     this.uploadUrl = uploadUrl;
     this.service = service;
     this.size = maxQueueSize;
@@ -171,7 +178,22 @@ public class AnalyticsClient {
   }
 
   public boolean offer(Message message) {
-    return messageQueue.offer(message);
+    if (message == StopMessage.STOP || message == FlushMessage.POISON)
+      return messageQueue.offer(message);
+    if (!queueSlots.tryAcquire()) return false;
+    if (messageQueue.offer(message)) return true;
+    queueSlots.release();
+    return false;
+  }
+
+  private void putMessage(Message message) throws InterruptedException {
+    queueSlots.acquire();
+    try {
+      messageQueue.put(message);
+    } catch (InterruptedException interrupted) {
+      queueSlots.release();
+      throw interrupted;
+    }
   }
 
   public void enqueue(Message message) {
@@ -189,16 +211,14 @@ public class AnalyticsClient {
         // @jorgen25 check if message is below 32kb limit for individual messages, no need to check
         // for extra characters
         if (messageByteSize <= MSG_MAX_SIZE) {
-          //          messageQueue.put(message);
-
           if (isBackPressuredAfterSize(messageByteSize)) {
             this.currentQueueSizeInBytes = messageByteSize;
             messageQueue.put(FlushMessage.POISON);
-            messageQueue.put(message);
+            putMessage(message);
 
             log.print(VERBOSE, "Maximum storage size has been hit Flushing...");
           } else {
-            messageQueue.put(message);
+            putMessage(message);
             this.currentQueueSizeInBytes += messageByteSize;
           }
         } else {
@@ -228,6 +248,7 @@ public class AnalyticsClient {
 
       List<BatchUploadTask> abandoned;
       synchronized (deferred) {
+        closedDuringRecovery = activeProbe != null || !deferred.isEmpty();
         abandoned = new ArrayList<>(deferred);
         deferred.clear();
         deferred.notifyAll();
@@ -283,11 +304,6 @@ public class AnalyticsClient {
       int contextSize = getGsonInstance().toJson(CONTEXT).getBytes(ENCODING).length;
       try {
         while (!stop) {
-          synchronized (deferred) {
-            while ((!deferred.isEmpty() || activeProbe != null) && !isShutDown.get()) {
-              deferred.wait();
-            }
-          }
           Message message = messageQueue.take();
 
           if (message == StopMessage.STOP) {
@@ -326,8 +342,13 @@ public class AnalyticsClient {
                 "Batching %s message(s) into batch %s.",
                 batch.batch().size(),
                 batch.sequence());
-            networkExecutor.submit(
-                BatchUploadTask.create(AnalyticsClient.this, batch, maximumRetries));
+            BatchUploadTask task =
+                BatchUploadTask.create(AnalyticsClient.this, batch, maximumRetries);
+            task.queueSlots = messages.size();
+            if (!defer(task, false)) {
+              task.releaseQueueSlots();
+              networkExecutor.submit(task);
+            }
 
             currentBatchSize.set(0);
             messages.clear();
@@ -352,7 +373,7 @@ public class AnalyticsClient {
   private boolean defer(BatchUploadTask task, boolean required) {
     synchronized (deferred) {
       boolean recovering = activeProbe != null || !deferred.isEmpty();
-      if (!required && !recovering) return false;
+      if (!required && !recovering && !closedDuringRecovery) return false;
       if (!isShutDown.get()) {
         deferred.addLast(task);
         if (!recovering) {
@@ -396,10 +417,13 @@ public class AnalyticsClient {
     synchronized (deferred) {
       activeProbe = null;
       boolean closed = isShutDown.get();
-      if (retry && !closed) deferred.addFirst(task);
-      if (!retry) probeAttempt = 0;
+      if (retry && !closed) deferred.addLast(task);
+      if (!retry) {
+        probeAttempt = 0;
+        task.releaseQueueSlots();
+      }
       if (deferred.isEmpty()) deferred.notifyAll();
-      else if (!closed) scheduleProbe(deferred.getFirst(), !retry);
+      else if (!closed) scheduleProbe(task, !retry);
       if (!retry || !closed) return;
     }
     task.closed();
@@ -417,6 +441,12 @@ public class AnalyticsClient {
     private final Backo backo;
     final Batch batch;
     private final int maxRetries;
+    private int queueSlots;
+
+    private void releaseQueueSlots() {
+      client.queueSlots.release(queueSlots);
+      queueSlots = 0;
+    }
 
     static BatchUploadTask create(AnalyticsClient client, Batch batch, int maxRetries) {
       return new BatchUploadTask(client, BACKO, batch, maxRetries);
@@ -509,6 +539,7 @@ public class AnalyticsClient {
     }
 
     private void closed() {
+      releaseQueueSlots();
       notifyCallbacksWithException(
           batch, new IOException("Client closed while delivery was deferred"));
     }

@@ -28,9 +28,11 @@ import com.segment.backo.Backo;
 import com.squareup.burst.BurstJUnit4;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Random;
@@ -456,6 +458,46 @@ public class AnalyticsClientTest {
 
     verify(hightouchService, times(3)).upload(null, batch);
     verify(callback).success(message);
+  }
+
+  @Test
+  public void failingProbeLetsQueuedBatchThroughAfterSourceCooldown() {
+    networkExecutor = Executors.newSingleThreadExecutor();
+    AnalyticsClient client = newClient();
+    TrackMessage first = TrackMessage.builder("first").userId("user").build();
+    TrackMessage second = TrackMessage.builder("second").userId("user").build();
+    List<Message> attempts = Collections.synchronizedList(new ArrayList<>());
+    List<Long> times = Collections.synchronizedList(new ArrayList<>());
+    long cooldownMillis = 100;
+    Backo backoff =
+        Backo.builder().base(TimeUnit.MILLISECONDS, cooldownMillis).factor(1).jitter(0).build();
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenAnswer(
+            call -> {
+              Batch batch = call.getArgument(1);
+              Message message = batch.batch().get(0);
+              times.add(System.nanoTime());
+              attempts.add(message);
+              if (message == first && !attempts.contains(second)) {
+                return Calls.response(Response.error(429, ResponseBody.create(null, "")));
+              }
+              return Calls.response(Response.success(200, response));
+            });
+
+    try {
+      new BatchUploadTask(client, backoff, batchFor(first), 0).run();
+      client.enqueue(second);
+      client.flush();
+      verify(callback, timeout(3000)).success(first);
+      verify(callback).success(second);
+      assertThat(attempts).containsExactly(first, first, second, first);
+      assertThat(times.get(1) - times.get(0))
+          .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(cooldownMillis));
+      assertThat(times.get(2) - times.get(1))
+          .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(cooldownMillis));
+    } finally {
+      client.shutdown();
+    }
   }
 
   @Test
