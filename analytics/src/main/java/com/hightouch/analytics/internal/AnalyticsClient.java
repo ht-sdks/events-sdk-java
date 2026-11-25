@@ -459,18 +459,15 @@ public class AnalyticsClient {
       this.maxRetries = maxRetries;
     }
 
-    private void notifyCallbacks(Batch batch, Exception exception) {
+    private void notifyCallbacks(Exception exception) {
       for (Message message : batch.batch()) {
         for (Callback callback : client.callbacks) {
           try {
             if (exception == null) callback.success(message);
             else callback.failure(message, exception);
-          } catch (RuntimeException callbackError) {
+          } catch (RuntimeException error) {
             client.log.print(
-                ERROR,
-                callbackError,
-                "Delivery callback threw for message %s.",
-                message.messageId());
+                ERROR, error, "Delivery callback threw for message %s.", message.messageId());
           }
         }
       }
@@ -487,7 +484,7 @@ public class AnalyticsClient {
         if (response.isSuccessful()) {
           client.log.print(VERBOSE, "Uploaded batch %s.", batch.sequence());
 
-          notifyCallbacks(batch, null);
+          notifyCallbacks(null);
           return false;
         }
 
@@ -505,7 +502,7 @@ public class AnalyticsClient {
         }
 
         client.log.print(DEBUG, "Could not upload batch %s. Giving up.", batch.sequence());
-        notifyCallbacks(batch, new IOException(response.errorBody().string()));
+        notifyCallbacks(new IOException(response.errorBody().string()));
 
         return false;
       } catch (IOException error) {
@@ -515,7 +512,7 @@ public class AnalyticsClient {
       } catch (Exception exception) {
         client.log.print(DEBUG, "Could not upload batch %s. Giving up.", batch.sequence());
 
-        notifyCallbacks(batch, exception);
+        notifyCallbacks(exception);
 
         return false;
       }
@@ -544,7 +541,7 @@ public class AnalyticsClient {
 
     private void closed() {
       releaseQueueSlots();
-      notifyCallbacks(batch, new IOException("Client closed while delivery was deferred"));
+      notifyCallbacks(new IOException("Client closed while delivery was deferred"));
     }
 
     private static boolean is5xx(int status) {
