@@ -385,11 +385,13 @@ public class AnalyticsClient {
         }
 
         int status = response.code();
-        if (is5xx(status)) {
+        if (status == 408 || is5xx(status)) {
+          response.errorBody().close();
           client.log.print(
-              DEBUG, "Could not upload batch %s due to server error. Retrying.", batch.sequence());
+              DEBUG, "Could not upload batch %s (HTTP %s). Retrying.", batch.sequence(), status);
           return true;
         } else if (status == 429) {
+          response.errorBody().close();
           client.log.print(
               DEBUG, "Could not upload batch %s due to rate limiting. Retrying.", batch.sequence());
           return true;

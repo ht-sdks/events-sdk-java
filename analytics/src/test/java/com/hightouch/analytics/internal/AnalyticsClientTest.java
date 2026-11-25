@@ -389,7 +389,7 @@ public class AnalyticsClientTest {
   }
 
   @Test
-  public void batchRetriesForHTTP5xxErrors() {
+  public void batchRetriesForTimeoutAndServerErrors() {
     AnalyticsClient client = newClient();
     TrackMessage trackMessage = TrackMessage.builder("foo").userId("bar").build();
     Batch batch = batchFor(trackMessage);
@@ -400,7 +400,7 @@ public class AnalyticsClientTest {
     Response<UploadResponse> failResponse =
         Response.error(500, ResponseBody.create(null, "Server Error"));
     when(hightouchService.upload(null, batch))
-        .thenReturn(Calls.response(failResponse))
+        .thenReturn(Calls.response(Response.error(408, ResponseBody.create(null, ""))))
         .thenReturn(Calls.response(failResponse))
         .thenReturn(Calls.response(failResponse))
         .thenReturn(Calls.response(successResponse));
