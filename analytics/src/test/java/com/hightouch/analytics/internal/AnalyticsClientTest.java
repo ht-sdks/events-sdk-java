@@ -445,29 +445,6 @@ public class AnalyticsClientTest {
   }
 
   @Test
-  public void transientFailureRecoversWithNoOrdinaryRetries() {
-    AnalyticsClient client = newClient();
-    TrackMessage message = TrackMessage.builder("foo").userId("bar").build();
-    Batch batch = batchFor(message);
-    when(hightouchService.upload(null, batch))
-        .thenReturn(Calls.response(Response.error(503, ResponseBody.create(null, ""))))
-        .thenReturn(Calls.response(Response.error(408, ResponseBody.create(null, ""))))
-        .thenReturn(Calls.response(Response.success(200, response)));
-
-    new BatchUploadTask(client, BACKO, batch, 0).run();
-
-    ArgumentCaptor<Runnable> probes = ArgumentCaptor.forClass(Runnable.class);
-    verify(networkExecutor, timeout(1000)).submit(probes.capture());
-    verify(hightouchService).upload(null, batch);
-    probes.getValue().run();
-    verify(networkExecutor, timeout(1000).times(2)).submit(probes.capture());
-    probes.getValue().run();
-
-    verify(hightouchService, times(3)).upload(null, batch);
-    verify(callback, timeout(1000)).success(message);
-  }
-
-  @Test
   public void transientResponseDuringShutdownFinishesWithoutBurstingRetries() {
     AnalyticsClient client = newClient();
     Message message = TrackMessage.builder("closing").userId("user").build();
@@ -815,28 +792,39 @@ public class AnalyticsClientTest {
     verify(networkExecutor).submit(any(AnalyticsClient.BatchUploadTask.class));
   }
 
+  enum TransientResponse {
+    RATE_LIMITED(429),
+    SERVICE_UNAVAILABLE(503);
+
+    final int code;
+
+    TransientResponse(int code) {
+      this.code = code;
+    }
+  }
+
   @Test
-  public void defersWhenFastRetriesDisabled() {
+  public void recoversWhenFastRetriesDisabled(TransientResponse initial) {
     AnalyticsClient client = newClient();
-    TrackMessage trackMessage = TrackMessage.builder("foo").userId("bar").build();
-    Batch batch = batchFor(trackMessage);
-
+    TrackMessage message = TrackMessage.builder("foo").userId("bar").build();
+    Batch batch = batchFor(message);
     when(hightouchService.upload(null, batch))
-        .thenAnswer(
-            new Answer<Call<UploadResponse>>() {
-              public Call<UploadResponse> answer(InvocationOnMock invocation) {
-                Response<UploadResponse> failResponse =
-                    Response.error(429, ResponseBody.create(null, "Not Found"));
-                return Calls.response(failResponse);
-              }
-            });
+        .thenReturn(Calls.response(Response.error(initial.code, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.error(408, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.success(200, response)));
 
-    BatchUploadTask batchUploadTask = new BatchUploadTask(client, BACKO, batch, 0);
-    batchUploadTask.run();
+    new BatchUploadTask(client, BACKO, batch, 0).run();
 
-    // runs once but never retries
-    verify(hightouchService, times(1)).upload(null, batch);
-    verify(callback, never()).failure(eq(trackMessage), any(IOException.class));
+    ArgumentCaptor<Runnable> probes = ArgumentCaptor.forClass(Runnable.class);
+    verify(networkExecutor, timeout(1000)).submit(probes.capture());
+    verify(hightouchService).upload(null, batch);
+    probes.getValue().run();
+    verify(networkExecutor, timeout(1000).times(2)).submit(probes.capture());
+    probes.getValue().run();
+
+    verify(hightouchService, times(3)).upload(null, batch);
+    verify(callback, timeout(1000)).success(message);
+    verify(callback, never()).failure(eq(message), any(Throwable.class));
   }
 
   /**
