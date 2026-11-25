@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Random;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -391,7 +392,7 @@ public class AnalyticsClientTest {
 
     // Verify that we tried to upload 4 times, 3 failed and 1 succeeded.
     verify(hightouchService, times(4)).upload(null, batch);
-    verify(callback).success(trackMessage);
+    verify(callback, timeout(1000)).success(trackMessage);
   }
 
   @Test
@@ -416,7 +417,7 @@ public class AnalyticsClientTest {
 
     // Verify that we tried to upload 4 times, 3 failed and 1 succeeded.
     verify(hightouchService, times(4)).upload(null, batch);
-    verify(callback).success(trackMessage);
+    verify(callback, timeout(1000)).success(trackMessage);
   }
 
   @Test
@@ -440,7 +441,7 @@ public class AnalyticsClientTest {
 
     // Verify that we tried to upload 4 times, 3 failed and 1 succeeded.
     verify(hightouchService, times(4)).upload(null, batch);
-    verify(callback).success(trackMessage);
+    verify(callback, timeout(1000)).success(trackMessage);
   }
 
   @Test
@@ -463,7 +464,7 @@ public class AnalyticsClientTest {
     probes.getValue().run();
 
     verify(hightouchService, times(3)).upload(null, batch);
-    verify(callback).success(message);
+    verify(callback, timeout(1000)).success(message);
   }
 
   @Test
@@ -480,7 +481,7 @@ public class AnalyticsClientTest {
     try {
       new BatchUploadTask(client, BACKO, batch, 3).run();
       verify(hightouchService).upload(null, batch);
-      verify(callback).failure(eq(message), any(IOException.class));
+      verify(callback, timeout(1000)).failure(eq(message), any(IOException.class));
     } finally {
       isShutDown.set(false);
       client.shutdown();
@@ -532,12 +533,45 @@ public class AnalyticsClientTest {
           .when(callback)
           .success(message);
       tasks.getAllValues().get(0).run();
-      verify(callback).success(message);
+      verify(callback, timeout(1000)).success(message);
       verify(networkExecutor, timeout(1000).times(3)).submit(tasks.capture());
       List<Runnable> submitted = tasks.getAllValues();
       submitted.get(submitted.size() - 2).run(); // Starts recovery.
       submitted.get(submitted.size() - 1).run(); // Transfers from executor to deferred queue.
       assertThat(client.offer(message)).isFalse();
+    } finally {
+      client.shutdown();
+    }
+  }
+
+  @Test
+  public void successCallbackCanEnqueueTwiceWithOneNetworkWorker() throws Exception {
+    messageQueue = new LinkedBlockingQueue<>(1);
+    networkExecutor = Executors.newSingleThreadExecutor();
+    AnalyticsClient client = newClient(1);
+    Message first = TrackMessage.builder("first").userId("user").build();
+    Message next = TrackMessage.builder("next").userId("user").build();
+    CountDownLatch admitted = new CountDownLatch(1);
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenAnswer(
+            call -> {
+              if (!admitted.await(3, TimeUnit.SECONDS))
+                throw new IOException("waiting for enqueue");
+              return Calls.response(Response.success(200, response));
+            });
+    doAnswer(
+            call -> {
+              client.enqueue(next);
+              client.enqueue(next);
+              return null;
+            })
+        .when(callback)
+        .success(first);
+    try {
+      client.enqueue(first);
+      client.enqueue(next);
+      admitted.countDown();
+      verify(callback, timeout(3000).times(3)).success(next);
     } finally {
       client.shutdown();
     }
@@ -572,7 +606,7 @@ public class AnalyticsClientTest {
       client.enqueue(second);
       client.flush();
       verify(callback, timeout(3000)).success(first);
-      verify(callback).success(second);
+      verify(callback, timeout(1000)).success(second);
       assertThat(attempts).containsExactly(first, first, second, first);
       assertThat(times.get(1) - times.get(0))
           .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(cooldownMillis));
@@ -625,7 +659,7 @@ public class AnalyticsClientTest {
 
     // Verify we only tried to upload once.
     verify(hightouchService).upload(null, batch);
-    verify(callback).failure(eq(trackMessage), any(IOException.class));
+    verify(callback, timeout(1000)).failure(eq(trackMessage), any(IOException.class));
   }
 
   @Test
@@ -642,7 +676,7 @@ public class AnalyticsClientTest {
 
     // Verify we only tried to upload once.
     verify(hightouchService).upload(null, batch);
-    verify(callback).failure(eq(trackMessage), any(RuntimeException.class));
+    verify(callback, timeout(1000)).failure(eq(trackMessage), any(RuntimeException.class));
   }
 
   @Test

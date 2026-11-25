@@ -68,6 +68,7 @@ public class AnalyticsClient {
   private final Log log;
   private final List<Callback> callbacks;
   private final ExecutorService networkExecutor;
+  private final ExecutorService callbackExecutor;
   private final ExecutorService looperExecutor;
   private final ScheduledExecutorService flushScheduler;
   private final AtomicBoolean isShutDown;
@@ -134,6 +135,7 @@ public class AnalyticsClient {
     this.callbacks = callbacks;
     this.looperExecutor = Executors.newSingleThreadExecutor(threadFactory);
     this.networkExecutor = networkExecutor;
+    this.callbackExecutor = Executors.newSingleThreadExecutor(threadFactory);
     this.isShutDown = isShutDown;
     this.writeKey = writeKey;
 
@@ -285,6 +287,7 @@ public class AnalyticsClient {
 
       shutdownAndWait(looperExecutor, "looper");
       shutdownAndWait(networkExecutor, "network");
+      shutdownAndWait(callbackExecutor, "callback");
 
       log.print(
           VERBOSE, "Analytics client shut down in %s ms", (System.currentTimeMillis() - start));
@@ -477,8 +480,17 @@ public class AnalyticsClient {
     }
 
     private void notifyCallbacks(Exception exception) {
-      // A callback may enqueue again, so release admission before invoking it.
       client.queueSlots.release(queueSlots);
+      if (client.callbacks.isEmpty()) return;
+      try {
+        client.callbackExecutor.execute(() -> invokeCallbacks(exception));
+      } catch (RejectedExecutionException closed) {
+        // An upload can finish after shutdown stops waiting for the network executor.
+        invokeCallbacks(exception);
+      }
+    }
+
+    private void invokeCallbacks(Exception exception) {
       for (Message message : batch.batch()) {
         for (Callback callback : client.callbacks) {
           try {
