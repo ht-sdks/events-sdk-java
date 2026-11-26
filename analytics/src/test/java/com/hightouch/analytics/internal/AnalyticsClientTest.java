@@ -4,8 +4,9 @@ import static com.hightouch.analytics.internal.FlushMessage.POISON;
 import static com.hightouch.analytics.internal.StopMessage.STOP;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
@@ -29,12 +30,15 @@ import com.segment.backo.Backo;
 import com.squareup.burst.BurstJUnit4;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Random;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -46,7 +50,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.ArgumentMatcher;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.invocation.InvocationOnMock;
@@ -92,11 +95,15 @@ public class AnalyticsClientTest {
   // Defers loading the client until tests can initialize all required
   // dependencies.
   AnalyticsClient newClient() {
+    return newClient(50);
+  }
+
+  AnalyticsClient newClient(int batchSize) {
     return new AnalyticsClient(
         messageQueue,
         null,
         hightouchService,
-        50,
+        batchSize,
         TimeUnit.HOURS.toMillis(1),
         0,
         MAX_BATCH_SIZE,
@@ -385,7 +392,7 @@ public class AnalyticsClientTest {
 
     // Verify that we tried to upload 4 times, 3 failed and 1 succeeded.
     verify(hightouchService, times(4)).upload(null, batch);
-    verify(callback).success(trackMessage);
+    verify(callback, timeout(1000)).success(trackMessage);
   }
 
   @Test
@@ -410,7 +417,7 @@ public class AnalyticsClientTest {
 
     // Verify that we tried to upload 4 times, 3 failed and 1 succeeded.
     verify(hightouchService, times(4)).upload(null, batch);
-    verify(callback).success(trackMessage);
+    verify(callback, timeout(1000)).success(trackMessage);
   }
 
   @Test
@@ -434,18 +441,197 @@ public class AnalyticsClientTest {
 
     // Verify that we tried to upload 4 times, 3 failed and 1 succeeded.
     verify(hightouchService, times(4)).upload(null, batch);
-    verify(callback).success(trackMessage);
+    verify(callback, timeout(1000)).success(trackMessage);
   }
 
   @Test
-  public void batchDoesNotRetryForNon5xxAndNon429HTTPErrors() {
+  public void shutdownPreservesOrdinaryRetriesAndStopsDeferredAttempts() {
+    AnalyticsClient client = newClient();
+    Message message = TrackMessage.builder("closing").userId("user").build();
+    Batch batch = batchFor(message);
+    when(hightouchService.upload(null, batch))
+        .thenAnswer(
+            call -> {
+              isShutDown.set(true);
+              return Calls.response(Response.error(429, ResponseBody.create(null, "")));
+            });
+    try {
+      new BatchUploadTask(client, BACKO, batch, 3).run();
+      verify(hightouchService, times(4)).upload(null, batch);
+      verify(callback, timeout(1000)).failure(eq(message), any(IOException.class));
+    } finally {
+      isShutDown.set(false);
+      client.shutdown();
+    }
+  }
+
+  @Test(timeout = 5000)
+  public void producerWaitingForCapacityCannotPublishBehindStop() throws Exception {
+    messageQueue = new LinkedBlockingQueue<>(1);
+    AnalyticsClient client = newClient(1);
+    Message message = TrackMessage.builder("queued").userId("user").build();
+    ArgumentCaptor<Runnable> tasks = ArgumentCaptor.forClass(Runnable.class);
+    client.enqueue(message);
+    client.enqueue(message);
+    verify(networkExecutor, timeout(1000).times(2)).submit(tasks.capture());
+
+    Thread producer = new Thread(() -> client.enqueue(message));
+    producer.start();
+    while (producer.getState() != Thread.State.WAITING) Thread.yield();
+    client.shutdown();
+    assertThat(client.offer(message)).isFalse();
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenReturn(Calls.response(Response.success(200, response)));
+    tasks.getValue().run(); // Releases a permit after STOP has been consumed.
+    producer.join(1000);
+    assertThat(producer.isAlive()).isFalse();
+    assertThat(messageQueue).isEmpty();
+  }
+
+  @Test
+  public void countsBatchesWaitingInTheNetworkExecutorUntilDeliveryCompletes() {
+    messageQueue = new LinkedBlockingQueue<>(1);
+    AnalyticsClient client = newClient(1);
+    Message message = TrackMessage.builder("queued").userId("user").build();
+    ArgumentCaptor<Runnable> tasks = ArgumentCaptor.forClass(Runnable.class);
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenReturn(Calls.response(Response.success(200, response)))
+        .thenAnswer(call -> Calls.response(Response.error(503, ResponseBody.create(null, ""))));
+    try {
+      client.enqueue(message);
+      client.enqueue(message);
+      verify(networkExecutor, timeout(1000).times(2)).submit(tasks.capture());
+      assertThat(client.offer(message)).isFalse();
+      doAnswer(
+              call -> {
+                assertThat(client.offer(message)).isTrue();
+                return null;
+              })
+          .when(callback)
+          .success(message);
+      tasks.getAllValues().get(0).run();
+      verify(callback, timeout(1000)).success(message);
+      verify(networkExecutor, timeout(1000).times(3)).submit(tasks.capture());
+      List<Runnable> submitted = tasks.getAllValues();
+      submitted.get(submitted.size() - 2).run(); // Starts recovery.
+      submitted.get(submitted.size() - 1).run(); // Independently exhausts the second batch.
+      assertThat(client.offer(message)).isFalse();
+    } finally {
+      client.shutdown();
+    }
+  }
+
+  @Test
+  public void successCallbackCanEnqueueTwiceWithOneNetworkWorker() throws Exception {
+    messageQueue = new LinkedBlockingQueue<>(1);
+    networkExecutor = Executors.newSingleThreadExecutor();
+    AnalyticsClient client = newClient(1);
+    Message first = TrackMessage.builder("first").userId("user").build();
+    Message next = TrackMessage.builder("next").userId("user").build();
+    CountDownLatch admitted = new CountDownLatch(1);
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenAnswer(
+            call -> {
+              if (!admitted.await(3, TimeUnit.SECONDS))
+                throw new IOException("waiting for enqueue");
+              return Calls.response(Response.success(200, response));
+            });
+    doAnswer(
+            call -> {
+              client.enqueue(next);
+              client.enqueue(next);
+              return null;
+            })
+        .when(callback)
+        .success(first);
+    try {
+      client.enqueue(first);
+      client.enqueue(next);
+      admitted.countDown();
+      verify(callback, timeout(3000).times(3)).success(next);
+    } finally {
+      client.shutdown();
+    }
+  }
+
+  @Test
+  public void failingProbeLetsQueuedBatchThroughDuringBackoff() throws InterruptedException {
+    networkExecutor = Executors.newSingleThreadExecutor();
+    AnalyticsClient client = newClient();
+    TrackMessage first = TrackMessage.builder("first").userId("user").build();
+    TrackMessage second = TrackMessage.builder("second").userId("user").build();
+    List<Message> attempts = Collections.synchronizedList(new ArrayList<>());
+    List<Long> times = Collections.synchronizedList(new ArrayList<>());
+    CountDownLatch secondFailure = new CountDownLatch(1);
+    long cooldownMillis = 100;
+    Backo backoff =
+        Backo.builder().base(TimeUnit.MILLISECONDS, cooldownMillis).factor(1).jitter(0).build();
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenAnswer(
+            call -> {
+              Batch batch = call.getArgument(1);
+              Message message = batch.batch().get(0);
+              times.add(System.nanoTime());
+              attempts.add(message);
+              if (message == first && !attempts.contains(second)) {
+                if (attempts.size() == 2) secondFailure.countDown();
+                return Calls.response(Response.error(429, ResponseBody.create(null, "")));
+              }
+              return Calls.response(Response.success(200, response));
+            });
+
+    try {
+      new BatchUploadTask(client, backoff, batchFor(first), 0).run();
+      assertThat(secondFailure.await(2, TimeUnit.SECONDS)).isTrue();
+      client.enqueue(second);
+      client.flush();
+      verify(callback, timeout(3000)).success(first);
+      verify(callback, timeout(1000)).success(second);
+      assertThat(attempts).containsExactly(first, first, second, first);
+      assertThat(times.get(1) - times.get(0))
+          .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(cooldownMillis));
+      assertThat(times.get(3) - times.get(1))
+          .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(cooldownMillis));
+    } finally {
+      client.shutdown();
+    }
+  }
+
+  @Test
+  public void throwingFailureCallbackDoesNotStrandNextBatch() {
+    networkExecutor = Executors.newSingleThreadExecutor();
+    AnalyticsClient client = newClient();
+    TrackMessage first = TrackMessage.builder("first").userId("user").build();
+    TrackMessage second = TrackMessage.builder("second").userId("user").build();
+    Batch batch = batchFor(first);
+    when(hightouchService.upload(eq(null), any(Batch.class)))
+        .thenReturn(Calls.response(Response.success(200, response)));
+    when(hightouchService.upload(null, batch))
+        .thenReturn(Calls.response(Response.error(503, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.error(400, ResponseBody.create(null, ""))));
+    doThrow(new IllegalStateException("listener")).when(callback).failure(eq(first), any());
+
+    try {
+      new BatchUploadTask(client, BACKO, batch, 0).run();
+      verify(callback, timeout(3000)).failure(eq(first), any());
+      client.enqueue(second);
+      client.flush();
+      verify(callback, timeout(3000)).success(second);
+      verify(callback, times(1)).failure(eq(first), any());
+    } finally {
+      client.shutdown();
+    }
+  }
+
+  @Test
+  public void batchDoesNotRetryBadRequests() {
     AnalyticsClient client = newClient();
     TrackMessage trackMessage = TrackMessage.builder("foo").userId("bar").build();
     Batch batch = batchFor(trackMessage);
 
     // Throw a HTTP error that should not be retried.
     Response<UploadResponse> failResponse =
-        Response.error(404, ResponseBody.create(null, "Not Found"));
+        Response.error(400, ResponseBody.create(null, "Bad Request"));
     when(hightouchService.upload(null, batch)).thenReturn(Calls.response(failResponse));
 
     BatchUploadTask batchUploadTask = new BatchUploadTask(client, BACKO, batch, DEFAULT_RETRIES);
@@ -453,7 +639,7 @@ public class AnalyticsClientTest {
 
     // Verify we only tried to upload once.
     verify(hightouchService).upload(null, batch);
-    verify(callback).failure(eq(trackMessage), any(IOException.class));
+    verify(callback, timeout(1000)).failure(eq(trackMessage), any(IOException.class));
   }
 
   @Test
@@ -470,11 +656,11 @@ public class AnalyticsClientTest {
 
     // Verify we only tried to upload once.
     verify(hightouchService).upload(null, batch);
-    verify(callback).failure(eq(trackMessage), any(RuntimeException.class));
+    verify(callback, timeout(1000)).failure(eq(trackMessage), any(RuntimeException.class));
   }
 
   @Test
-  public void givesUpAfterMaxRetries() {
+  public void defersAfterMaxRetries() {
     AnalyticsClient client = newClient();
     TrackMessage trackMessage = TrackMessage.builder("foo").userId("bar").build();
     Batch batch = batchFor(trackMessage);
@@ -495,16 +681,7 @@ public class AnalyticsClientTest {
     // DEFAULT_RETRIES == maxRetries
     // tries 11(one normal run + 10 retries) even though default is 50 in AnalyticsClient.java
     verify(hightouchService, times(11)).upload(null, batch);
-    verify(callback)
-        .failure(
-            eq(trackMessage),
-            argThat(
-                new ArgumentMatcher<IOException>() {
-                  @Override
-                  public boolean matches(IOException exception) {
-                    return exception.getMessage().equals("11 retries exhausted");
-                  }
-                }));
+    verify(callback, never()).failure(eq(trackMessage), any(IOException.class));
   }
 
   @Test
@@ -529,16 +706,7 @@ public class AnalyticsClientTest {
     // DEFAULT_RETRIES == maxRetries
     // tries 11(one normal run + 10 retries)
     verify(hightouchService, times(4)).upload(null, batch);
-    verify(callback)
-        .failure(
-            eq(trackMessage),
-            argThat(
-                new ArgumentMatcher<IOException>() {
-                  @Override
-                  public boolean matches(IOException exception) {
-                    return exception.getMessage().equals("4 retries exhausted");
-                  }
-                }));
+    verify(callback, never()).failure(eq(trackMessage), any(IOException.class));
   }
 
   @Test
@@ -627,37 +795,39 @@ public class AnalyticsClientTest {
     verify(networkExecutor).submit(any(AnalyticsClient.BatchUploadTask.class));
   }
 
+  enum TransientResponse {
+    RATE_LIMITED(429),
+    SERVICE_UNAVAILABLE(503);
+
+    final int code;
+
+    TransientResponse(int code) {
+      this.code = code;
+    }
+  }
+
   @Test
-  public void neverRetries() {
+  public void recoversWhenFastRetriesDisabled(TransientResponse initial) {
     AnalyticsClient client = newClient();
-    TrackMessage trackMessage = TrackMessage.builder("foo").userId("bar").build();
-    Batch batch = batchFor(trackMessage);
-
+    TrackMessage message = TrackMessage.builder("foo").userId("bar").build();
+    Batch batch = batchFor(message);
     when(hightouchService.upload(null, batch))
-        .thenAnswer(
-            new Answer<Call<UploadResponse>>() {
-              public Call<UploadResponse> answer(InvocationOnMock invocation) {
-                Response<UploadResponse> failResponse =
-                    Response.error(429, ResponseBody.create(null, "Not Found"));
-                return Calls.response(failResponse);
-              }
-            });
+        .thenReturn(Calls.response(Response.error(initial.code, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.error(408, ResponseBody.create(null, ""))))
+        .thenReturn(Calls.response(Response.success(200, response)));
 
-    BatchUploadTask batchUploadTask = new BatchUploadTask(client, BACKO, batch, 0);
-    batchUploadTask.run();
+    new BatchUploadTask(client, BACKO, batch, 0).run();
 
-    // runs once but never retries
-    verify(hightouchService, times(1)).upload(null, batch);
-    verify(callback)
-        .failure(
-            eq(trackMessage),
-            argThat(
-                new ArgumentMatcher<IOException>() {
-                  @Override
-                  public boolean matches(IOException exception) {
-                    return exception.getMessage().equals("1 retries exhausted");
-                  }
-                }));
+    ArgumentCaptor<Runnable> probes = ArgumentCaptor.forClass(Runnable.class);
+    verify(networkExecutor, timeout(1000)).submit(probes.capture());
+    verify(hightouchService).upload(null, batch);
+    probes.getValue().run();
+    verify(networkExecutor, timeout(1000).times(2)).submit(probes.capture());
+    probes.getValue().run();
+
+    verify(hightouchService, times(3)).upload(null, batch);
+    verify(callback, timeout(1000)).success(message);
+    verify(callback, never()).failure(eq(message), any(Throwable.class));
   }
 
   /**

@@ -26,11 +26,14 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import okhttp3.HttpUrl;
 import retrofit2.Call;
 import retrofit2.Response;
@@ -54,6 +57,8 @@ public class AnalyticsClient {
   }
 
   private final BlockingQueue<Message> messageQueue;
+  private final Semaphore queueSlots;
+  private final ReentrantReadWriteLock publication = new ReentrantReadWriteLock();
   private final HttpUrl uploadUrl;
   private final HightouchService service;
   private final int size;
@@ -63,10 +68,12 @@ public class AnalyticsClient {
   private final Log log;
   private final List<Callback> callbacks;
   private final ExecutorService networkExecutor;
+  private final ExecutorService callbackExecutor;
   private final ExecutorService looperExecutor;
   private final ScheduledExecutorService flushScheduler;
   private final AtomicBoolean isShutDown;
   private final String writeKey;
+  private final LinkedList<BatchUploadTask> deferred = new LinkedList<>();
 
   public static AnalyticsClient create(
       HttpUrl uploadUrl,
@@ -112,6 +119,10 @@ public class AnalyticsClient {
       AtomicBoolean isShutDown,
       String writeKey) {
     this.messageQueue = messageQueue;
+    // Share admission capacity between the input queue, the batch being built and parked batches.
+    long capacity = (long) messageQueue.remainingCapacity() + maxQueueSize;
+    this.queueSlots =
+        new Semaphore((int) Math.min(Integer.MAX_VALUE - messageQueue.size(), capacity));
     this.uploadUrl = uploadUrl;
     this.service = service;
     this.size = maxQueueSize;
@@ -121,19 +132,19 @@ public class AnalyticsClient {
     this.callbacks = callbacks;
     this.looperExecutor = Executors.newSingleThreadExecutor(threadFactory);
     this.networkExecutor = networkExecutor;
+    this.callbackExecutor = Executors.newSingleThreadExecutor(threadFactory);
     this.isShutDown = isShutDown;
     this.writeKey = writeKey;
 
     this.currentQueueSizeInBytes = 0;
 
-    if (!isShutDown.get()) looperExecutor.submit(new Looper());
-
     flushScheduler = Executors.newScheduledThreadPool(1, threadFactory);
+    if (!isShutDown.get()) looperExecutor.submit(new Looper());
     flushScheduler.scheduleAtFixedRate(
         new Runnable() {
           @Override
           public void run() {
-            flush();
+            offer(FlushMessage.POISON);
           }
         },
         flushIntervalInMillis,
@@ -168,7 +179,37 @@ public class AnalyticsClient {
   }
 
   public boolean offer(Message message) {
-    return messageQueue.offer(message);
+    if (!publication.readLock().tryLock()) return false;
+    try {
+      if (isShutDown.get()) return false;
+      if (message == StopMessage.STOP || message == FlushMessage.POISON)
+        return messageQueue.offer(message);
+      if (!queueSlots.tryAcquire()) return false;
+      if (messageQueue.offer(message)) return true;
+      queueSlots.release();
+      return false;
+    } finally {
+      publication.readLock().unlock();
+    }
+  }
+
+  private void putMessage(Message message) throws InterruptedException {
+    boolean event = message != FlushMessage.POISON && message != StopMessage.STOP;
+    if (event) queueSlots.acquire();
+    publication.readLock().lock();
+    try {
+      if (message == StopMessage.STOP || !isShutDown.get()) {
+        messageQueue.put(message);
+        return;
+      }
+      log.print(ERROR, "Attempt to enqueue a message when shutdown has been called %s.", message);
+    } catch (InterruptedException e) {
+      if (event) queueSlots.release();
+      throw e;
+    } finally {
+      publication.readLock().unlock();
+    }
+    if (event) queueSlots.release();
   }
 
   public void enqueue(Message message) {
@@ -186,16 +227,14 @@ public class AnalyticsClient {
         // @jorgen25 check if message is below 32kb limit for individual messages, no need to check
         // for extra characters
         if (messageByteSize <= MSG_MAX_SIZE) {
-          //          messageQueue.put(message);
-
           if (isBackPressuredAfterSize(messageByteSize)) {
             this.currentQueueSizeInBytes = messageByteSize;
-            messageQueue.put(FlushMessage.POISON);
-            messageQueue.put(message);
+            putMessage(FlushMessage.POISON);
+            putMessage(message);
 
             log.print(VERBOSE, "Maximum storage size has been hit Flushing...");
           } else {
-            messageQueue.put(message);
+            putMessage(message);
             this.currentQueueSizeInBytes += messageByteSize;
           }
         } else {
@@ -205,7 +244,7 @@ public class AnalyticsClient {
               "Message was above individual limit. MessageId: " + message.messageId());
         }
       } else {
-        messageQueue.put(message);
+        putMessage(message);
       }
     } catch (InterruptedException e) {
       log.print(ERROR, e, "Interrupted while adding message %s.", message);
@@ -223,14 +262,27 @@ public class AnalyticsClient {
     if (isShutDown.compareAndSet(false, true)) {
       final long start = System.currentTimeMillis();
 
+      List<BatchUploadTask> abandoned;
+      synchronized (deferred) {
+        abandoned = new ArrayList<>(deferred);
+        deferred.clear();
+      }
+      for (BatchUploadTask task : abandoned) task.closed();
+
       // first let's tell the system to stop
-      enqueue(StopMessage.STOP);
+      publication.writeLock().lock();
+      try {
+        enqueue(StopMessage.STOP);
+      } finally {
+        publication.writeLock().unlock();
+      }
 
       // we can shutdown the flush scheduler without worrying
       flushScheduler.shutdownNow();
 
       shutdownAndWait(looperExecutor, "looper");
       shutdownAndWait(networkExecutor, "network");
+      shutdownAndWait(callbackExecutor, "callback");
 
       log.print(
           VERBOSE, "Analytics client shut down in %s ms", (System.currentTimeMillis() - start));
@@ -310,8 +362,14 @@ public class AnalyticsClient {
                 "Batching %s message(s) into batch %s.",
                 batch.batch().size(),
                 batch.sequence());
-            networkExecutor.submit(
-                BatchUploadTask.create(AnalyticsClient.this, batch, maximumRetries));
+            BatchUploadTask task =
+                BatchUploadTask.create(AnalyticsClient.this, batch, maximumRetries);
+            task.queueSlots = messages.size();
+            try {
+              networkExecutor.submit(task);
+            } catch (RejectedExecutionException rejected) {
+              task.notifyCallbacks(rejected);
+            }
 
             currentBatchSize.set(0);
             messages.clear();
@@ -332,6 +390,37 @@ public class AnalyticsClient {
     }
   }
 
+  private void defer(BatchUploadTask task) {
+    synchronized (deferred) {
+      if (!isShutDown.get()) {
+        deferred.add(task);
+        long delay = Math.max(1, task.backo.backoff(task.maxRetries));
+        flushScheduler.schedule(() -> submitDeferred(task), delay, TimeUnit.MILLISECONDS);
+        return;
+      }
+    }
+    task.closed();
+  }
+
+  private void submitDeferred(BatchUploadTask task) {
+    synchronized (deferred) {
+      if (!deferred.contains(task)) return;
+      try {
+        networkExecutor.submit(
+            () -> {
+              synchronized (deferred) {
+                if (!deferred.remove(task)) return;
+              }
+              if (task.upload()) defer(task);
+            });
+        return;
+      } catch (RejectedExecutionException unavailable) {
+        deferred.remove(task);
+      }
+    }
+    defer(task);
+  }
+
   static class BatchUploadTask implements Runnable {
     private static final Backo BACKO =
         Backo.builder() //
@@ -344,6 +433,7 @@ public class AnalyticsClient {
     private final Backo backo;
     final Batch batch;
     private final int maxRetries;
+    private int queueSlots;
 
     static BatchUploadTask create(AnalyticsClient client, Batch batch, int maxRetries) {
       return new BatchUploadTask(client, BACKO, batch, maxRetries);
@@ -356,10 +446,27 @@ public class AnalyticsClient {
       this.maxRetries = maxRetries;
     }
 
-    private void notifyCallbacksWithException(Batch batch, Exception exception) {
+    private void notifyCallbacks(Exception exception) {
+      client.queueSlots.release(queueSlots);
+      if (client.callbacks.isEmpty()) return;
+      try {
+        client.callbackExecutor.execute(() -> invokeCallbacks(exception));
+      } catch (RejectedExecutionException closed) {
+        // An upload can finish after shutdown stops waiting for the network executor.
+        invokeCallbacks(exception);
+      }
+    }
+
+    private void invokeCallbacks(Exception exception) {
       for (Message message : batch.batch()) {
         for (Callback callback : client.callbacks) {
-          callback.failure(message, exception);
+          try {
+            if (exception == null) callback.success(message);
+            else callback.failure(message, exception);
+          } catch (RuntimeException error) {
+            client.log.print(
+                ERROR, error, "Delivery callback threw for message %s.", message.messageId());
+          }
         }
       }
     }
@@ -375,12 +482,7 @@ public class AnalyticsClient {
         if (response.isSuccessful()) {
           client.log.print(VERBOSE, "Uploaded batch %s.", batch.sequence());
 
-          for (Message message : batch.batch()) {
-            for (Callback callback : client.callbacks) {
-              callback.success(message);
-            }
-          }
-
+          notifyCallbacks(null);
           return false;
         }
 
@@ -398,7 +500,7 @@ public class AnalyticsClient {
         }
 
         client.log.print(DEBUG, "Could not upload batch %s. Giving up.", batch.sequence());
-        notifyCallbacksWithException(batch, new IOException(response.errorBody().string()));
+        notifyCallbacks(new IOException(response.errorBody().string()));
 
         return false;
       } catch (IOException error) {
@@ -408,7 +510,7 @@ public class AnalyticsClient {
       } catch (Exception exception) {
         client.log.print(DEBUG, "Could not upload batch %s. Giving up.", batch.sequence());
 
-        notifyCallbacksWithException(batch, exception);
+        notifyCallbacks(exception);
 
         return false;
       }
@@ -416,22 +518,25 @@ public class AnalyticsClient {
 
     @Override
     public void run() {
-      int attempt = 0;
-      for (; attempt <= maxRetries; attempt++) {
-        boolean retry = upload();
-        if (!retry) return;
+      for (int attempt = 0; ; attempt++) {
+        if (!upload()) return;
+        if (attempt >= maxRetries) {
+          client.defer(this);
+          return;
+        }
         try {
           backo.sleep(attempt);
         } catch (InterruptedException e) {
           client.log.print(
               DEBUG, "Thread interrupted while backing off for batch %s.", batch.sequence());
+          client.queueSlots.release(queueSlots);
           return;
         }
       }
+    }
 
-      client.log.print(ERROR, "Could not upload batch %s. Retries exhausted.", batch.sequence());
-      notifyCallbacksWithException(
-          batch, new IOException(Integer.toString(attempt) + " retries exhausted"));
+    private void closed() {
+      notifyCallbacks(new IOException("Client closed while delivery was deferred"));
     }
 
     private static boolean is5xx(int status) {
